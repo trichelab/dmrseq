@@ -68,7 +68,7 @@
 #'    a cluster appropriate for the operating system. 
 #' @param maxPerms a positive integer that represents the maximum number 
 #'    of permutations that will be used to generate the global null 
-#'    distribution of test statistics.  Default value is 20.
+#'    distribution of test statistics.  Default value is 10.
 #' @param maxGap integer value representing maximum number of basepairs in 
 #' between neighboring CpGs to be included in the same DMR. 
 #' @param maxGapSmooth integer value representing maximum number of basepairs  
@@ -354,13 +354,19 @@ dmrseq <- function(bs, testCovariate, adjustCovariate = NULL, cutoff = 0.1,
         FLIP <- NULL
         # configure the permutation matrix for two group comparisons
         if (length(unique(design[, coeff[1]])) == 2 && 
-            length(coeff) == 1) {
+            length(coeff) == 1 &&
+            choose(nrow(design), min(sampleSize)) < 5e5 ) {
             if (verbose) {
                 message("Performing balanced permutations of ",
                         "condition across samples ", 
                   "to generate a null distribution of region test statistics")
             }
             perms <- combn(seq(1, nrow(design)), min(sampleSize))
+            
+            # Remove redundant permutations (if balanced)
+            if (length(unique(table(design[,coeff]))) == 1){
+              perms <- perms[, c(1:(ncol(perms)/2))]
+            }
             
             # restrict to unique permutations that don't include any 
             # groups consisting of all identical conditions
@@ -372,26 +378,6 @@ dmrseq <- function(bs, testCovariate, adjustCovariate = NULL, cutoff = 0.1,
             }
             if (length(rmv) > 0 )
               perms <- perms[,-rmv]
-            
-            # Remove redundant permutations (if balanced)
-            if (length(unique(table(design[,coeff]))) == 1){
-              pdx <- seq_len(ncol(perms))
-              idx <- seq_along(design[,coeff])
-              z <- lapply(pdx, function(p) apply(perms, 2, function(x) 
-                all(x == idx[-which(idx %in% perms[,p])] )))
-              z <- lapply(z, which)
-            
-              pairs <- NULL
-              for (r in seq_along(z)){
-                if (length(z[[r]])>0) {
-                  if (z[[r]] %in% seq_along(z)) {
-                    pairs <- rbind(pairs, sort(c(r, z[[r]])))
-                  }
-                }
-              }
-              pairs <- unique(pairs)
-              perms <- perms[,c(pairs[,1], which(lengths(z)==0))]
-            }
             
             # subsample permutations based on similarity to original partition
             # gives preference to those with the least similarity
