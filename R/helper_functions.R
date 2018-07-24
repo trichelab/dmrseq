@@ -140,7 +140,7 @@ bumphunt <- function(bs,
     minInSpan = 30, minNumRegion = 5, 
     cutoff = NULL, maxGap = 1000, maxGapSmooth = 2500, smooth = FALSE, 
     bpSpan = 1000, verbose = TRUE, parallel = FALSE, block = FALSE,
-    blockSize = 5000, chrsPerChunk = 1, ...) {
+    blockSize = 5000, chrsPerChunk = 1, fact = FALSE, ...) {
     
     # calculate smoothing span from minInSpan
     bpSpan2 <- NULL
@@ -219,7 +219,7 @@ bumphunt <- function(bs,
       } else {
           tmp <- estim(meth.mat = meth.mat, cov.mat = cov.mat, 
               pos = pos, chr = chr, 
-              design = design, coeff = coeff)
+              design = design, coeff = coeff, coeff.adj = coeff.adj)
           rawBeta <- tmp$meth.diff
           sd.raw <- tmp$sd.meth.diff
       }
@@ -238,13 +238,14 @@ bumphunt <- function(bs,
         beta[[1]] <- beta[[2]] <- rep(NA, length(pos))
         
         beta.tmp <- smoother(y = rawBeta, 
-                                 x = pos, 
-                                 chr = chr, maxGapSmooth = maxGapSmooth,
-                                 weights = weights, 
-                                 minNumRegion = minNumRegion, 
-                                 minInSpan = minInSpan, 
-                bpSpan = bpSpan, bpSpan2 = bpSpan2, verbose = verbose, 
-                parallel = parallel)
+                             x = pos, chr = chr, 
+                             maxGapSmooth = maxGapSmooth,
+                             weights = weights, 
+                             minNumRegion = minNumRegion, 
+                             minInSpan = minInSpan, 
+                             bpSpan = bpSpan, bpSpan2 = bpSpan2, 
+                             verbose = verbose, 
+                             parallel = parallel)
         beta[[1]] <- beta.tmp[[1]]
         beta[[2]] <- beta.tmp[[2]]
 
@@ -266,7 +267,11 @@ bumphunt <- function(bs,
       rawBeta <- rawBeta/sd.raw
     }
     
-    beta[-Index] <- rawBeta[-Index]
+    if(length(Index) > 0){
+      beta[-Index] <- rawBeta[-Index]
+    }else{ # if no loci were smoothed, use raw ests instead of NA
+      beta <- rawBeta
+    }
     
     tab <- rbind(tab, 
         regionScanner(meth.mat = meth.mat, cov.mat = cov.mat, pos = pos, 
@@ -274,7 +279,7 @@ bumphunt <- function(bs,
         minNumRegion = minNumRegion, design = design, coeff = coeff, 
         coeff.adj = coeff.adj,
         verbose = verbose, parallel = parallel,
-        pDat=pData(bs), block = block, blockSize = blockSize))
+        pDat=pData(bs), block = block, blockSize = blockSize, fact = fact))
     }
     
     if (length(tab) == 0) {
@@ -312,7 +317,6 @@ bumphunt <- function(bs,
     
     return(tab)
 }
-
 
 refineEdges <- function(y, candidates = NULL, 
     cutoff = qt(0.975, nrow(design) - 2), verbose = FALSE, 
@@ -370,13 +374,13 @@ trimEdges <- function(x, candidates = NULL, verbose = FALSE, minNumRegion) {
   if (verbose) 
       message("trimEdges: trimming")
   
-  trimOne <- function(w, x, sig) {
+  trimOne <- function(w, x) {
       mid <- which.max(x[w])
       new.start <- 1
       new.end <- length(w)
       
       if (x[w[mid]]/min(x[w]) > 4/3) {
-        if (w[mid] - w[1] + 1 > 4) {
+        if (sum(!is.na(x[w[1]:w[mid]])) > 4) {
           fit1 <- lm(x[w[seq_len(mid)]] ~ w[seq_len(mid)])
           if (length(summary(fit1)) > 0) {
             if (nrow(summary(fit1)$coef) == 2) {
@@ -393,7 +397,7 @@ trimEdges <- function(x, candidates = NULL, verbose = FALSE, minNumRegion) {
           }
         }
         
-        if (w[length(w)] - w[mid] + 1 > 4) {
+        if (sum(!is.na(x[w[mid]:w[length(w)]])) > 4) {
           fit2 <- lm(x[w[seq(mid,length(w))]] ~ w[seq(mid,length(w))])
           if (length(fit2) > 0) {
             if (nrow(summary(fit2)$coef) == 2) {
@@ -424,11 +428,11 @@ trimEdges <- function(x, candidates = NULL, verbose = FALSE, minNumRegion) {
       which.long <- which(lengths(candidates) > minNumRegion)
       if (length(which.long) > 1) {
         candidates[which.long] <- lapply(candidates[which.long], 
-                                         FUN=trimOne, x=x, sig=sig)
+                                         FUN=trimOne, x=x)
         candidates[vapply(candidates, is.null, FUN.VALUE=logical(1))] <- NULL
       } else if (length(which.long) == 1) {
         candidates[[which.long]] <- unlist(lapply(candidates[which.long], 
-                                           FUN=trimOne, x=x, sig=sig))
+                                           FUN=trimOne, x=x))
       }
     }
     return(candidates)
@@ -445,7 +449,7 @@ regionScanner <- function(meth.mat = meth.mat, cov.mat = cov.mat, pos = pos,
     chr = chr, x, y = x, ind = seq(along = x), order = TRUE, minNumRegion = 5, 
     maxGap = 300, cutoff = quantile(abs(x), 0.99), assumeSorted = FALSE, 
     verbose = verbose, design = design, coeff = coeff, coeff.adj = coeff.adj,
-    parallel = parallel, pDat, block, blockSize) {
+    parallel = parallel, pDat, block, blockSize, fact = fact) {
     if (any(is.na(x[ind]))) {
        message(sum(is.na(x[ind]))," CpG(s) excluded due to zero coverage. ",
               appendLF = FALSE)
@@ -525,7 +529,7 @@ regionScanner <- function(meth.mat = meth.mat, cov.mat = cov.mat, pos = pos,
           # add back to regions and remake indices
           reg <- as.matrix(as.data.frame(IRanges::reduce(c(flk, reg)))[,2:3])
           idx <- apply(reg, 1, function(x) which(pos %in% x[1]:x[2]))
-          if (class(idx) == "list"){
+          if (is(idx, "list")){
             Indexes[[j]] <- idx
           }else{
             Indexes[[j]] <- list(as.vector(idx))
@@ -551,8 +555,39 @@ regionScanner <- function(meth.mat = meth.mat, cov.mat = cov.mat, pos = pos,
       }
     }
     
-    numCandidates <- length(Indexes)
-    if (numCandidates == 0) {
+    # only keep regions with replicates in each group for at least two CpGs
+    # for factor comparisons 
+    replicateStatus <- function(candidates, design, coeff, fact){
+      levs <- unique(design[, coeff])
+      if(!is(levs, "matrix"))
+        levs <- as.matrix(levs)
+      
+      if (fact){
+        indexRanges <- IRanges(unlist(lapply(candidates, min)), 
+                               unlist(lapply(candidates, max)))
+        cov.mat.cand <- extractROWS(cov.mat, indexRanges)
+        
+        prev.mat <- rep(TRUE, nrow(cov.mat.cand))
+        for (l in seq_len(nrow(levs))){
+          cov.matl <- DelayedMatrixStats::rowSums2(
+                          cov.mat.cand[,apply(design[, coeff, drop = FALSE], 1,
+                            function(x) identical(unname(x),
+                                                  unname(levs[l,])))] > 0) > 1 &
+                      prev.mat
+          prev.mat <- cov.matl
+        }
+
+        rel <- unlist(lapply(IRanges::relist(cov.matl,indexRanges), sum))
+        
+        return(which(rel > 1))
+      }else{
+        return(seq_along(candidates))
+      }
+    }
+    
+    Indexes <- Indexes[replicateStatus(Indexes, design, coeff, fact)]
+    
+    if (length(Indexes) == 0) {
       message("No candidates found. ")
       return(NULL)
     }
@@ -561,6 +596,7 @@ regionScanner <- function(meth.mat = meth.mat, cov.mat = cov.mat, pos = pos,
         correlation = corAR1(form = ~1 |sample), 
         correlationSmall = corCAR1(form = ~L | sample), 
         weights = varPower(form = ~1/MedCov, fixed = 0.5)) {
+      
         dat <- data.frame(g.fac = rep(pDat[,colnames(design)[coeff[1]]], 
                                       each = length(ix)),
                           sample = factor(rep(seq_len(nrow(design)), 
@@ -570,8 +606,10 @@ regionScanner <- function(meth.mat = meth.mat, cov.mat = cov.mat, pos = pos,
                           L = as.vector(rep(pos[ix], nrow(design))))
         
         if(length(coeff.adj) > 0){
-          dat$a.fac <- rep(pDat[,colnames(design)[coeff.adj]], 
-                                  each=length(ix))
+          for (k in seq_along(coeff.adj)){
+            dat[,colnames(design)[coeff.adj[k]]] <- 
+                    rep(pDat[,colnames(design)[coeff.adj[k]]], each=length(ix))
+          }
         }
         
         if(length(unique(dat$g.fac)) == 2){
@@ -584,143 +622,128 @@ regionScanner <- function(meth.mat = meth.mat, cov.mat = cov.mat, pos = pos,
               (length(unique(na.omit(dat$cov - dat$meth))) == 1 && 
                na.omit(dat$cov - dat$meth)[1] == 0))) {
             
-            dat$pos <- as.numeric(factor(dat$L))
-            if (block){
-              # one interior knot per 10K basepairs, with max of 10
-              k <- min(ceiling((max(pos[ix]) - min(pos[ix])) / 10000) + 1,
-                      10)			      
-              if (length(coeff.adj)==0){
-                X <- model.matrix( ~ dat$g.fac + ns(dat$L, df=k))
-                mm <- as.formula(paste0("Z ~ g.fac + ns(L, df=", k, ")"))
-              }else{
-                X <- model.matrix( ~ dat$g.fac + ns(dat$L, df=k) + dat$a.fac)
-                mm <- formula(Z ~ g.fac + ns(L, df=eval(k)) + a.fac)
-                mm <- as.formula(paste0("Z ~ g.fac + ns(L, df=", 
-                                        k, ") + a.fac"))
-              }
+          dat$pos <- as.numeric(factor(dat$L))
+                   if (block){
+            # one interior knot per 10K basepairs, with max of 10
+            k <- min(ceiling((max(pos[ix]) - min(pos[ix])) / 10000) + 1, 10)
+            if (length(coeff.adj)==0){
+              X <- model.matrix( ~ dat$g.fac + ns(dat$L, df=k))
+              mm <- as.formula(paste0("Z ~ g.fac + ns(L, df=", k, ")"))
             }else{
-              if (length(coeff.adj)==0){
-                X <- model.matrix( ~ dat$g.fac + dat$L)
-                mm <- formula(Z ~ g.fac + factor(L))
-              }else{
-                X <- model.matrix( ~ dat$g.fac + dat$L + dat$a.fac)
-                mm <- formula(Z ~ g.fac + factor(L) + a.fac)
-              }
+              X <- model.matrix( ~ dat$g.fac + ns(dat$L, df=k) + 
+                                   as.matrix(dat[,colnames(design)[coeff.adj]]))
+              mm <- as.formula(paste0("Z ~ g.fac + ns(L, df=", 
+                                      k, ") + ",
+                                      paste(colnames(design)[coeff.adj], 
+                                            collapse=" + ")))
             }
-            
-            Y <- as.matrix(dat$meth)
-            N <- as.matrix(dat$cov)
-            
-            dat$MedCov <- rep(as.numeric(by(dat$cov, dat$pos, median)), 
-                              nrow(design))
-            # remove rows with zero coverage
-            whichZ <- which(dat$cov==0)
-            if (length(whichZ)>0){
-              dat <- dat[-whichZ,]
+          }else{
+            if (length(coeff.adj)==0){
+              X <- model.matrix( ~ dat$g.fac + dat$L)
+              mm <- formula(Z ~ g.fac + factor(L))
+            }else{
+              X <- model.matrix( ~ dat$g.fac + dat$L + 
+                                   as.matrix(dat[,colnames(design)[coeff.adj]]))
+              mm <- as.formula(paste0("Z ~ g.fac + factor(L) + ",
+                                      paste(colnames(design)[coeff.adj], 
+                                            collapse=" + ")))
             }
+          }
             
-            ## small constants to bound p and phi pick this such that min value
-            ##  of z[m>0] is greater than all values of z[m==0]
-            c0 <- 0.05
-            c1 <- 0.001
-            
-            ## check to make sure data is complete
-            ixn <- N > 0
-            if (mean(ixn) < 1) {
-                ## has missing entries
-                X <- X[ixn, , drop = FALSE]
-                Y <- Y[ixn]
-                N <- N[ixn]
-                ## check design not enough df for regression
-                if (nrow(X) < ncol(X) + 1) {
-                  message("Not enough degree of freedom to fit the ", 
-                          "model. Drop some terms in formula")
-                  return(data.frame(beta = NA, stat = NA, constant = FALSE))
-                }
-                ## design is not of full rank because of missing. Skip
-                if (any(abs(svd(X)$d) < 1e-08)) 
-                  return(data.frame(beta = NA, stat = NA, constant = FALSE))
+          Y <- as.matrix(dat$meth)
+          N <- as.matrix(dat$cov)
+
+          
+          dat$MedCov <- rep(as.numeric(by(dat$cov, dat$pos, median)), 
+                            nrow(design))
+          # remove rows with zero coverage
+          whichZ <- which(dat$cov==0)
+          if (length(whichZ)>0){
+            dat <- dat[-whichZ,]
+          }
+          
+          ## small constants to bound p and phi pick this such that min value
+          ##  of z[m>0] is greater than all values of z[m==0]
+          c0 <- 0.05
+          c1 <- 0.001
+          
+          ## check to make sure data is complete
+          ixn <- N > 0
+          if (mean(ixn) < 1) {
+            ## has missing entries
+            X <- X[ixn, , drop = FALSE]
+            Y <- Y[ixn]
+            N <- N[ixn]
+            ## check design not enough df for regression
+            if (nrow(X) < ncol(X) + 1) {
+              message("Not enough degree of freedom to fit the ", 
+                      "model. Drop some terms in formula")
+              return(data.frame(beta = NA, stat = NA, constant = FALSE))
             }
+            ## design is not of full rank because of missing. Skip
+            if (any(abs(svd(X)$d) < 1e-08)) 
+              return(data.frame(beta = NA, stat = NA, constant = FALSE))
+          }
+          
+          ## Transform the methylation levels.  Add a small constant to bound 
+          ## away from 0/1.
+          dat$Z <- asin(2 * (Y + c0)/(N + 2 * c0) - 1)
+          
+          # Add a tiny amt of jitter to avoid numerically constant Z vals 
+          # across a sample over the entire region
+          if (max(table(dat$Z, dat$sample)) >= length(ix) - 1) {
+            dat$Z <- asin(2 * (Y + c0)/(N + 2 * c0) - 1) + 
+              runif(length(Y), -c1, c1)
+          }
             
-            ## Transform the methylation levels.  Add a small constant to bound 
-            ## away from 0/1.
-            dat$Z <- asin(2 * (Y + c0)/(N + 2 * c0) - 1)
-            
-            # Add a tiny amt of jitter to avoid numerically constant Z vals 
-            # across a sample over the entire region
-            if (max(table(dat$Z, dat$sample)) >= length(ix) - 1) {
-                dat$Z <- asin(2 * (Y + c0)/(N + 2 * c0) - 1) + 
-                  runif(length(Y), -c1, c1)
-            }
-            
-            
-            if (length(ix) >= 40) {
-                fit <- tryCatch({
-                  summary(gls(mm, weights = weights, 
-                              data = dat, correlation = correlation))
-                }, error = function(e) {
-                  return(NA)
-                })
-                
-                # error handling in case of false convergence (don't include 
-                # first variance weighting, and then corr str)
-                if (sum(is.na(fit)) == length(fit)) {
-                  fit <- tryCatch({
-                    summary(gls(mm, data = dat, 
-                                correlation = correlation))
-                  }, error = function(e) {
-                    return(NA)
-                  })
-                  if (sum(is.na(fit)) == length(fit)) {
-                    fit <- tryCatch({
-                      summary(gls(mm, data = dat))
-                    }, error = function(e) {
-                      return(NA)
-                    })
-                  }
-                }
-            } else {
-                # check for presence of 1-2 coverage outliers that could end up
-                # driving the difference between the groups
-                if (length(unique(dat$MedCov[seq_len(length(ix))])) > 1 && 
-                    length(ix) <= 10) {
-                  grubbs.one <- suppressWarnings(grubbs.test(
-                    dat$MedCov[seq_len(length(ix))])$p.value)
+            if (length(ix) < 40) {
+              correlation <- correlationSmall
+              
+              # check for presence of 1-2 coverage outliers that could end up
+              # driving the difference between the groups
+              grubbs.one <- grubbs.two <- 1
+              if (length(unique(dat$MedCov[seq_len(length(ix))])) > 1 && 
+                  length(ix) <= 10) {
+                grubbs.one <- suppressWarnings(grubbs.test(
+                  dat$MedCov[seq_len(length(ix))])$p.value)
+                if(length(ix) > 3){
                   grubbs.two <- suppressWarnings(
                     grubbs.test(dat$MedCov[seq_len(length(ix))], 
                     type = 20)$p.value)
-                } else {
-                  grubbs.one <- grubbs.two <- 1
                 }
+              }
                 
-                if (grubbs.one < 0.01 || grubbs.two < 0.01) {
-                  weights <- varIdent(form = ~1)
-                }
-                
+              if (grubbs.one < 0.01 || grubbs.two < 0.01) {
+                weights <- varIdent(form = ~1)
+              }
+              
+            }
+            
+            # gls model fitting    
+            fit <- tryCatch({
+              summary(gls(mm, weights = weights, 
+                          data = dat, correlation = correlation))
+            }, error = function(e) {
+              return(NA)
+            })
+              
+            # error handling in case of false convergence (don't include 
+            # first variance weighting, and then corr str)
+            if(sum(is.na(fit)) == length(fit)){
+              fit <- tryCatch({
+                summary(gls(mm, data = dat, 
+                            correlation = correlation))
+              }, error = function(e) {
+                return(NA)
+              })
+              
+              if(sum(is.na(fit)) == length(fit)){
                 fit <- tryCatch({
-                  summary(gls(mm, weights = weights,
-                              data = dat, correlation = correlationSmall))
+                  summary(gls(mm, data = dat))
                 }, error = function(e) {
                   return(NA)
                 })
-                
-                # error handling in case of false convergence (don't include 
-                # first variance weighting, and then corr str)
-                if (sum(is.na(fit)) == length(fit)) {
-                  fit <- tryCatch({
-                    summary(gls(mm, data = dat, 
-                                correlation = correlationSmall))
-                  }, error = function(e) {
-                    return(NA)
-                  })
-                  if (sum(is.na(fit)) == length(fit)) {
-                    fit <- tryCatch({
-                      summary(gls(mm, data = dat))
-                    }, error = function(e) {
-                      return(NA)
-                    })
-                  }
-                }
+              }
             }
             
             if (!(sum(is.na(fit)) == length(fit))) {
@@ -767,6 +790,39 @@ regionScanner <- function(meth.mat = meth.mat, cov.mat = cov.mat, pos = pos,
             design = design, coeff = coeff)))
     }
     
+    # check for extreme beta values (rare; represents proportion differences >
+    # than 1 or large differences in sign and magnitude compared to simple 
+    # proportion difference) and re-fit without variance weighting 
+    # only for 2-group comparisons
+    if( length(coeff)==1 && fact ){
+      levs <- unique(design[, coeff])
+      indexRanges <- IRanges(unlist(lapply(Indexes, min)), 
+                             unlist(lapply(Indexes, max)))
+      prop.mat.dmr <- extractROWS(meth.mat/cov.mat, indexRanges)
+   
+      prop.mat1.means <- DelayedMatrixStats::rowMeans2(prop.mat.dmr[,
+                                  design[, coeff] == levs[which.min(levs)]],
+                                  na.rm=TRUE)
+      prop.mat2.means <- DelayedMatrixStats::rowMeans2(prop.mat.dmr[,
+                                  design[, coeff] == levs[which.max(levs)]],
+                                  na.rm=TRUE)
+    
+      simpleMeanDiff <- IRanges::mean(IRanges::relist(prop.mat2.means - 
+                                                        prop.mat1.means,
+                                              indexRanges), na.rm=TRUE)
+      
+      reFit <- which(abs(ret$beta) > pi |
+                     (abs(simpleMeanDiff - ret$beta/pi) > 1/3 & 
+                     sign(simpleMeanDiff) != sign(ret$beta)))
+      
+      if(length(reFit) > 0){
+        ret[reFit,] <- do.call("rbind", lapply(Indexes[reFit], 
+                           function(Index) asin.gls.cov(ix = ind[Index], 
+                                   design = design, coeff = coeff,
+                                   weights = NULL)))
+      }
+    }
+    
     df <- S4Vectors::DataFrame(ind, x = x[ind], chr = chr[ind], pos = pos[ind])
     res <- as.data.frame(S4Vectors::aggregate(df, S4Vectors::List(Indexes), 
                                    chr = unlist(IRanges::heads(chr, 1L)),
@@ -784,7 +840,7 @@ regionScanner <- function(meth.mat = meth.mat, cov.mat = cov.mat, pos = pos,
     
     t2 <- proc.time()
     if (verbose) {
-        message(numCandidates, " regions scored (", round((t2 - t1)[3]/60, 2), 
+        message(nrow(res), " regions scored (", round((t2 - t1)[3]/60, 2), 
                 " min). ")
     }
     
@@ -893,29 +949,79 @@ smoother <- function(y, x = NULL, weights = NULL, chr = chr,
 ## Function to compute the coefficient estimates for regression of the 
 ## methylation levels on the group indicator variable, at each CpG site 
 ## - only used if not a standard two-group comparison
-getEstimate <- function(mat, design, coeff) {
+getEstimate <- function(mat, design, coeff, coeff.adj) {
     vv <- design[, coeff, drop = FALSE]
     QR <- qr(design)
     Q <- qr.Q(QR)
     R <- qr.R(QR)
     df.residual <- ncol(mat) - QR$rank
     bhat <- t(tcrossprod(backsolve(R, t(Q)), as.matrix(mat)))
+    vb <- chol2inv(R)[coeff,coeff]
+    if(is(vb, "matrix"))
+      vb <- mean(diag(vb))
+    vb <- rep(vb, nrow(mat))
+    
+    # for any loci with missing coverage in at least one sample, need to
+    # estimate effect separately (since previous matrix mult method will
+    # produce NA). Split into groups based on which samples are missing 
+    # (so only have to estimate QR matrix the number of times equal to the
+    # number of different patterns, rather than once for each loci with 
+    # missing coverage)
+    if(sum(is.na(mat)) > 0){
+      NA.patterns <- unique(is.na(as.matrix(mat)))
+      nomissing <- which(rowSums(NA.patterns) == 0)
+      if (length(nomissing) > 0){
+        NA.patterns <- NA.patterns[-nomissing,]
+      }
+      for (l in seq_len(nrow(NA.patterns))){
+        idx <- which(apply(as.matrix(is.na(mat)), 1, 
+                           function(x) identical(x, NA.patterns[l,])))
+      
+        vv <- design[-which(NA.patterns[l,]), coeff, drop = FALSE]
+        QR <- qr(design[-which(NA.patterns[l,]), , drop = FALSE])
+        Q <- qr.Q(QR)
+        R <- qr.R(QR)
+        bhat[idx,] <- t(tcrossprod(backsolve(R, t(Q)), 
+                                  as.matrix(mat[idx, 
+                                                -which(NA.patterns[l,]), 
+                                                drop = FALSE])))
+        new.vb <- chol2inv(R)[coeff,coeff]
+        if(is(new.vb, "matrix"))
+          new.vb <- mean(diag(new.vb))
+        vb[idx] <- new.vb
+      }
+    }
     
     if (!is.matrix(bhat)) 
-      b <- matrix(b, ncol = 1)
-    if (!("matrix" %in% class(mat)) && !("DelayedMatrix" %in% class(mat))) 
+      bhat <- matrix(bhat, ncol = 1)
+    if (!is(mat, "matrix") && !is(mat, "DelayedMatrix"))
       mat <- matrix(mat, nrow = 1)
     
-    meth.diff <- DelayedMatrixStats::rowSums2(exp(bhat))/
-                 (1 + DelayedMatrixStats::rowSums2(exp(bhat))) - 
-                 exp(bhat[,1])/(1 + exp(bhat[,1]))
+    if (length(coeff) == 1){ # two-group comparison or continuous 
+      if (length(coeff.adj) > 0){
+        meth.diff <- exp(rowSums(bhat[,-coeff.adj, drop = FALSE])) / 
+                       (1 + exp(rowSums(bhat[,-coeff.adj, drop = FALSE]))) - 
+                     exp(rowSums(bhat[,-c(coeff, coeff.adj), drop = FALSE])) / 
+                       (1 + exp(rowSums(bhat[,-c(coeff,coeff.adj),drop=FALSE])))
+      }else{
+        meth.diff <- exp(rowSums(bhat)) / (1 + exp(rowSums(bhat))) - 
+                     exp(rowSums(bhat[,-coeff,drop=FALSE])) / 
+                        (1 + exp(rowSums(bhat[,-coeff, drop=FALSE])))
+      }
+    }else{ # multi-factor comparison - scan for max diff between any 2 groups
+      if(length(coeff.adj) == 0){
+        gdes <- t(unique(design) %*% t(bhat)) 
+      }else{
+        gdes <- t(unique(design[,-coeff.adj,drop=FALSE]) %*% 
+                    t(bhat[,-coeff.adj]))
+      }
+      group.means <- exp(gdes) / (1 + exp(gdes))
+      meth.diff <- as.numeric(rowDiffs(rowRanges(group.means)))
+    }
     
-    X <- rep(design, each = nrow(mat))
-    X1 <- design
-
     res <- as.matrix(mat) - t(tcrossprod(design, bhat))
-    se2 <- DelayedMatrixStats::rowSums2(res ^ 2) / df.residual
-    vb <- chol2inv(R)[coeff[1],coeff[1]] * se2
+    se2 <- DelayedMatrixStats::rowSums2(res ^ 2, na.rm = TRUE) / df.residual
+    vb <- vb * se2
     
     out <- list(meth.diff = meth.diff, 
                 sd.meth.diff = sqrt(vb), 
@@ -926,18 +1032,29 @@ getEstimate <- function(mat, design, coeff) {
 
 # *Experimental* - only used if not a standard two-group comparison
 estim <- function(meth.mat = meth.mat, cov.mat = cov.mat, pos = pos, 
-                  chr = chr, design, coeff) {
+                  chr = chr, design, coeff, coeff.adj) {
     
     ## For a linear regression of logit(meth.level) on the biological group 
     ## indicator variable at each CpG site
     mat <- meth.mat/cov.mat
     
-    eps <- min(mat[mat != 0])
+    if (sum(mat != 0, na.rm = TRUE) > 0 && sum(mat != 1, na.rm = TRUE) > 0){
+      eps <- min( min(as.matrix(mat)[as.matrix(mat) != 0], na.rm = TRUE), 
+                  1-max(as.matrix(mat)[as.matrix(mat != 1)], na.rm = TRUE) )
+    }else if (sum(mat != 0, na.rm = TRUE) > 0){
+      eps <- min(as.matrix(mat)[as.matrix(mat) != 0], na.rm = TRUE)
+    }else if(sum(mat != 1, na.rm = TRUE) > 0){
+      eps <- 1-max(as.matrix(mat)[as.matrix(mat) != 1], na.rm = TRUE)
+    }
+    if(eps == 1)
+      eps <- 0.1
+    
     mat[mat == 0] <- eps
     mat[mat == 1] <- 1 - eps
     logit.mat <- log(mat/(1 - mat))
     
-    lm.fit <- getEstimate(mat = logit.mat, design = design, coeff = coeff)
+    lm.fit <- getEstimate(mat = logit.mat, design = design, coeff = coeff, 
+                          coeff.adj)
     meth.diff <- lm.fit$meth.diff
     sd.meth.diff <- lm.fit$sd.meth.diff
     

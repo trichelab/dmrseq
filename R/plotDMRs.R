@@ -133,12 +133,16 @@
 #' horizontal instead of vertical (default FALSE). This is useful if you need
 #' to plot many labels and want to preserve whitespace.
 #' 
+#' @param addLines logical indicating whether to plot smooth lines between 
+#' points. Default is true. Can be useful to turn this off for very small 
+#' regions.
+#' 
 #' @export
 #' 
 #' @return None (generates a plot)
 #' 
 #' @importFrom RColorBrewer brewer.pal
-#' @importFrom grDevices hcl
+#' @importFrom grDevices hcl rainbow
 #' @importFrom graphics arrows
 #' 
 #' @examples
@@ -166,7 +170,8 @@ plotDMRs <- function(BSseq, regions = NULL, testCovariate = NULL,
     highlightMain = FALSE, 
     qval = TRUE, stat = TRUE, verbose = TRUE, includeYlab = TRUE, 
     compareTrack = NULL, 
-    labelCols = NULL, horizLegend = FALSE) {
+    labelCols = NULL, horizLegend = FALSE,
+    addLines = TRUE) {
     # adapted from plotManyRegions from bsseq plot to take 
     # in a vector of qval values
     # (1 per region in regions argument) to be displayed in
@@ -176,6 +181,8 @@ plotDMRs <- function(BSseq, regions = NULL, testCovariate = NULL,
     # (loess) line per sample instead of a uniform-sized verbatim 
     # line going through
     # each observation
+    if (!addLines && !addPoints)
+      stop("At least one of addLines or addPoints must be true")
     if (verbose) 
         message("[plotDMRs] Plotting ", nrow(regions), " DMRs")
     if (!is.null(regions)) {
@@ -206,21 +213,34 @@ plotDMRs <- function(BSseq, regions = NULL, testCovariate = NULL,
     }
     
     if (!is.null(testCovariate)) {
-        coeff <- seq(2, (2 + length(testCovariate) - 1))
+        coeff <- seq(2, (1 + length(testCovariate)))
+        testCov <- pData(BSseq)[, testCovariate]
+        if (length(unique(testCov)) > 2 && !is.numeric(testCov))
+          coeff <- c(coeff, coeff + length(unique(testCov)) - 2)
+      
         design <- model.matrix(~pData(BSseq)[, testCovariate])
         
-        if (is.null(col)) {
-            cov.unique <- unique(design[, coeff])
-            colors <- gg_color_hue(length(cov.unique))
-            if (length(cov.unique) == 2) {
+        if (is.null(col) && !("col" %in% names(pData(BSseq)))) {
+            cov.unique <- unique(design[, coeff, drop = FALSE])
+            ncol <- nrow(cov.unique) 
+            
+            colors <- gg_color_hue(ncol)
+            if (ncol == 2) {
                 colors <- c("mediumblue", "deeppink1")
             }
-            colors <- cbind(cov.unique, colors[rank(as.numeric(cov.unique))])
-            z <- colors[, 2][match(design[, coeff], colors[, 1])]
+            colors <- cbind(cov.unique, 
+                            colors[rank(as.numeric(rowSums(cov.unique)), 
+                                        ties="first")])
+            colmat <- colors[, -ncol(colors), drop = FALSE]
+            colmat <- apply(colmat, 2, as.numeric)
+            z <- colors[,ncol(colors)][
+                         match(data.frame(t(design[, coeff, drop = FALSE])), 
+                               data.frame(t(colmat)))]
+            
             pData(BSseq)$col <- as.character(z)
         }
         
-        if (is.null(label)) {
+        if (is.null(label)  && !("label" %in% names(pData(BSseq))))  {
             pData(BSseq)$label <- paste0(pData(BSseq)[, testCovariate])
         }
     }
@@ -257,7 +277,7 @@ plotDMRs <- function(BSseq, regions = NULL, testCovariate = NULL,
             pointsMinCov = pointsMinCov, highlightMain = highlightMain, 
             qval = qval, stat = stat, includeYlab = includeYlab, 
             compareTrack = compareTrack, labelCols = labelCols,
-            horizLegend = horizLegend)
+            horizLegend = horizLegend, addLines = addLines)
     }
 }
 
